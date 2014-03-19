@@ -1,0 +1,33 @@
+VPATH=%VPATH%
+
+CC ?= gcc
+CXX ?= g++
+CXXFLAGS ?=
+AR ?= ar
+RUSTC ?= rustc
+RUSTDOC ?= rustdoc
+RUSTFLAGS ?= -O
+
+LIB_RS = src/read/lib.rs
+RUST_SRC = $(shell find $(VPATH)/src/read -type f -name '*.rs')
+
+.PHONY: all
+all: libread.dummy
+
+libread.dummy: $(LIB_RS) $(RUST_SRC)
+	$(RUSTC) $(RUSTFLAGS) $< --out-dir .
+	touch $@
+
+#read-test: $(LIB_RS) $(RUST_SRC)
+#	$(RUSTC) $(RUSTFLAGS) $< -o $@ --test
+#
+#check: read-test
+#	./read-test
+
+doc: $(LIB_RS) $(RUST_SRC)
+	$(RUSTDOC) $(LIB_RS)
+
+.PHONY: clean
+	clean:
+	rm -f *.o *.a *.so *.dylib *.rlib *.dll *.dummy *.exe *-test
+
