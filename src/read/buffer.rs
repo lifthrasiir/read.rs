@@ -1,6 +1,5 @@
-use std::{str, vec};
-use std::cmp::min;
-use std::io::{Buffer, IoError, IoResult};
+use std::{cmp, str, vec};
+use std::io::{IoError, IoResult};
 use std::vec_ng::Vec;
 
 pub struct LookaheadBuffer<'a> {
@@ -25,20 +24,26 @@ impl<'a> LookaheadBuffer<'a> {
 
             // try *not* to use the `saved` buffer if possible
             // we have no buffers to return in front of it, so we can directly give the error
-            let earlyret = {
+            let consume;
+            {
                 let buf = try!(self.buf.fill());
                 if buf.len() >= amt {
-                    true
+                    consume = None;
                 } else {
                     self.saved.clear();
                     self.saved.push_all(buf);
                     self.savedpos = 0;
-                    false
+                    consume = Some(buf.len());
                 }
             };
-            if earlyret {
-                // we can't borrow `buf` this longer...
-                return Ok(try!(self.buf.fill()));
+            match consume {
+                None => {
+                    // we can't borrow `buf` this longer...
+                    return Ok(try!(self.buf.fill()));
+                }
+                Some(buflen) => {
+                    self.buf.consume(buflen);
+                }
             }
         } else if self.savedpos > 0 {
             // TODO amortize this: we need to occasionally shrink the `saved` buffer,
@@ -50,27 +55,25 @@ impl<'a> LookaheadBuffer<'a> {
             //    self.saved[i] = self.saved[i - self.savedpos];
             //}
             //self.savedpos = 0;
-            }
+        }
 
         // only call `fill` when the `saved` buffer is not enough
+        // if there is a saved error, we don't bother reading though
         let minlen = self.savedpos + amt;
-        if self.saved.len() < minlen {
-            // give a saved error if any
-            match self.savederr.take() {
-                Some(err) => { return Err(err); }
-                None => {}
-            }
-
-            while self.saved.len() < minlen {
-                match self.buf.fill() {
+        if self.saved.len() < minlen && self.savederr.is_none() {
+            loop {
+                let consume = match self.buf.fill() {
                     Ok(buf) => {
                         self.saved.push_all(buf);
+                        if self.saved.len() >= minlen { break; }
+                        buf.len()
                     }
                     Err(err) => {
                         self.savederr = Some(err);
                         break;
                     }
-                }
+                };
+                self.buf.consume(consume);
             }
         }
 
@@ -178,7 +181,7 @@ impl<'a> Reader for LookaheadBuffer<'a> {
         let len;
         {
             let filled = try!(self.fill_request(0));
-            len = min(buf.len(), filled.len());
+            len = cmp::min(buf.len(), filled.len());
             let input = filled.slice(0, len);
             let output = buf.mut_slice(0, len);
             vec::bytes::copy_memory(output, input);
@@ -200,6 +203,168 @@ impl<'a> Buffer for LookaheadBuffer<'a> {
             self.savedpos += amt;
             assert!(self.savedpos <= self.saved.len());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{cmp, vec};
+    use std::io::{standard_error, IoResult, EndOfFile};
+
+    // used to simulate the corner cases
+    struct SimulatedBuffer<'a> {
+        calls: &'a [&'a [u8]],
+        index: uint,
+        pos: uint,
+    }
+
+    impl<'a> SimulatedBuffer<'a> {
+        fn new<'a>(calls: &'a [&'a [u8]]) -> SimulatedBuffer<'a> {
+            SimulatedBuffer { calls: calls, index: 0, pos: 0 }
+        }
+    }
+
+    impl<'a> Reader for SimulatedBuffer<'a> {
+        fn read(&mut self, buf: &mut [u8]) -> IoResult<uint> {
+            let len;
+            {
+                let filled = try!(self.fill());
+                len = cmp::min(buf.len(), filled.len());
+                let input = filled.slice(0, len);
+                let output = buf.mut_slice(0, len);
+                vec::bytes::copy_memory(output, input);
+            }
+            self.consume(len);
+            Ok(len)
+        }
+    }
+
+    impl<'a> Buffer for SimulatedBuffer<'a> {
+        fn fill<'a>(&'a mut self) -> IoResult<&'a [u8]> {
+            if self.index < self.calls.len() && self.pos == self.calls[self.index].len() {
+                self.index += 1;
+                self.pos = 0;
+            }
+            if self.index < self.calls.len() {
+                Ok(self.calls[self.index].slice_from(self.pos))
+            } else {
+                Err(standard_error(EndOfFile))
+            }
+        }
+
+        fn consume(&mut self, amt: uint) {
+            self.pos += amt;
+            assert!(self.pos <= self.calls[self.index].len());
+        }
+    }
+
+    #[test]
+    fn test_simulated_buffer() {
+        let mut b = SimulatedBuffer::new(&[]);
+        assert!(b.fill().is_err());
+
+        let buf = &[&[1,2,3]];
+        let mut b = SimulatedBuffer::new(buf);
+        assert_eq!(b.fill().unwrap(), &[1,2,3]);
+        b.consume(1);
+        assert_eq!(b.fill().unwrap(), &[2,3]);
+        b.consume(1);
+        assert_eq!(b.fill().unwrap(), &[3]);
+        b.consume(1);
+        assert!(b.fill().is_err());
+
+        let buf = &[&[1,2], &[3,4]];
+        let mut b = SimulatedBuffer::new(buf);
+        assert_eq!(b.fill().unwrap(), &[1,2]);
+        b.consume(1);
+        assert_eq!(b.fill().unwrap(), &[2]);
+        b.consume(1);
+        assert_eq!(b.fill().unwrap(), &[3,4]);
+        b.consume(2);
+        assert!(b.fill().is_err());
+
+        let buf = &[&[1,2,3], &[], &[4]];
+        let mut b = SimulatedBuffer::new(buf);
+        assert_eq!(b.fill().unwrap(), &[1,2,3]);
+        assert_eq!(b.fill().unwrap(), &[1,2,3]);
+        b.consume(3);
+        assert_eq!(b.fill().unwrap(), &[]);
+        assert_eq!(b.fill().unwrap(), &[4]);
+        b.consume(1);
+        assert!(b.fill().is_err());
+    }
+
+    #[test]
+    fn test_fill_empty() {
+        let mut b = SimulatedBuffer::new(&[]);
+        let mut lab = LookaheadBuffer::new(&mut b);
+        assert!(lab.fill().is_err());
+    }
+
+    #[test]
+    fn test_fill_no_lookahead() {
+        let buf = &[&[1,2,3]];
+        let mut b = SimulatedBuffer::new(buf);
+        let mut lab = LookaheadBuffer::new(&mut b);
+        assert_eq!(lab.fill().unwrap(), &[1,2,3]);
+        lab.consume(1);
+        assert_eq!(lab.fill().unwrap(), &[2,3]);
+        lab.consume(1);
+        assert_eq!(lab.fill().unwrap(), &[3]);
+        lab.consume(1);
+        assert!(lab.fill().is_err());
+
+        let buf = &[&[1,2], &[3,4]];
+        let mut b = SimulatedBuffer::new(buf);
+        let mut lab = LookaheadBuffer::new(&mut b);
+        assert_eq!(lab.fill().unwrap(), &[1,2]);
+        lab.consume(1);
+        assert_eq!(lab.fill().unwrap(), &[2]);
+        lab.consume(1);
+        assert_eq!(lab.fill().unwrap(), &[3,4]);
+        lab.consume(2);
+        assert!(lab.fill().is_err());
+    }
+
+    #[test]
+    fn test_fill_no_lookahead_with_nop_fill() {
+        let buf = &[&[1,2,3], &[], &[4]];
+        let mut b = SimulatedBuffer::new(buf);
+        let mut lab = LookaheadBuffer::new(&mut b);
+        assert_eq!(lab.fill().unwrap(), &[1,2,3]);
+        assert_eq!(lab.fill().unwrap(), &[1,2,3]);
+        lab.consume(3);
+        assert_eq!(lab.fill().unwrap(), &[4]); // will immediately pull the next buffer
+        lab.consume(1);
+        assert!(lab.fill().is_err());
+    }
+
+    #[test]
+    fn test_fill_excess_lookahead() {
+        let buf = &[&[1,2,3]];
+        let mut b = SimulatedBuffer::new(buf);
+        let mut lab = LookaheadBuffer::new(&mut b);
+        assert_eq!(lab.fill_request(5).unwrap(), &[1,2,3]);
+        assert_eq!(lab.fill_request(0).unwrap(), &[1,2,3]);
+        lab.consume(2);
+        assert_eq!(lab.fill_request(2).unwrap(), &[3]);
+        assert_eq!(lab.fill_request(0).unwrap(), &[3]);
+        lab.consume(1);
+        assert!(lab.fill_request(0).is_err());
+    }
+
+    #[test]
+    fn test_fill_multiple_calls() {
+        let buf = &[&[1,2,3], &[4], &[5,6,7]];
+        let mut b = SimulatedBuffer::new(buf);
+        let mut lab = LookaheadBuffer::new(&mut b);
+        assert_eq!(lab.fill_request(2).unwrap(), &[1,2,3]);
+        lab.consume(2);
+        assert_eq!(lab.fill_request(3).unwrap(), &[3,4,5,6,7]);
+        assert_eq!(lab.fill_request(0).unwrap(), &[3,4,5,6,7]);
+        lab.consume(1);
+        assert_eq!(lab.fill_request(0).unwrap(), &[4,5,6,7]);
     }
 }
 

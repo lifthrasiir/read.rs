@@ -1,5 +1,5 @@
 use std::{str, from_str};
-use std::io::{Buffer, IoResult};
+use std::io::{IoResult};
 use buffer::LookaheadBuffer;
 
 pub enum Flags {
