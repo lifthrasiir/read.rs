@@ -1,20 +1,8 @@
 use std::{str, from_str};
 use std::io::{IoResult};
 use buffer::LookaheadBuffer;
-
-pub enum Flags {
-    FlagSignPlus,
-    FlagSignMinus,
-    FlagAlternate,
-    FlagSignAwareZeroPad,
-}
-
-pub enum Alignment {
-    AlignLeft,
-    AlignRight,
-    AlignCenter,
-    AlignUnknown,
-}
+pub use parse::{Flags, FlagSignPlus, FlagSignMinus, FlagAlternate};
+pub use parse::{Alignment, AlignLeft, AlignRight, AlignCenter, AlignUnknown};
 
 pub struct Scanner<'a> {
     flags: uint, // packed
@@ -37,29 +25,26 @@ impl<'a> Scanner<'a> {
     }
 
     pub fn skip_prepad(&mut self) -> IoResult<uint> {
-        if self.flags & ((1 << AlignLeft as uint) | (1 << AlignCenter as uint)) != 0 {
-            self.skip_pad()
-        } else {
-            Ok(0)
+        match self.align {
+            AlignLeft | AlignCenter => self.skip_pad(),
+            _ => Ok(0)
         }
     }
 
     pub fn skip_postpad(&mut self) -> IoResult<uint> {
-        if self.flags & ((1 << AlignRight as uint) | (1 << AlignCenter as uint)) != 0 {
-            self.skip_pad()
-        } else {
-            Ok(0)
+        match self.align {
+            AlignRight | AlignCenter => self.skip_pad(),
+            _ => Ok(0)
         }
     }
 
     pub fn trim_postpad<'a>(&self, buf: &'a str) -> &'a str {
-        if self.flags & ((1 << AlignRight as uint) | (1 << AlignCenter as uint)) != 0 {
-            match self.fill {
+        match self.align {
+            AlignRight | AlignCenter => match self.fill {
                 Some(ch) => buf.trim_right_chars(&ch),
                 None => buf.trim_right(),
-            }
-        } else {
-            buf
+            },
+            _ => buf
         }
     }
 }
@@ -111,15 +96,18 @@ pub trait Exp<'a> {
 pub fn scan_signed_digits<'a, T: from_str::FromStr>(s: &'a mut Scanner) -> IoResult<Option<T>> {
     try!(s.skip_prepad());
 
+    let mandatory_sign = ((s.flags >> FlagSignPlus as uint) & 1) == 1;
+
     let mut i = 0;
     let result = {
         enum State {
             ExpectSignOrDigit = 0,   // @ ('+' | '-')?   ('0'..'9')+
-            ExpectDigit       = 2,   //   ('+' | '-')? @ ('0'..'9')+
-            ExpectMoreDigits  = 4+1, //   ('+' | '-')?   ('0'..'9') @ ('0'..'9')*
+            ExpectSign        = 2,   // @ ('+' | '-')    ('0'..'9')+
+            ExpectDigit       = 4,   //   ('+' | '-')? @ ('0'..'9')+
+            ExpectMoreDigits  = 6+1, //   ('+' | '-')?   ('0'..'9') @ ('0'..'9')*
         }
 
-        let mut state = ExpectSignOrDigit;
+        let mut state = if mandatory_sign {ExpectSign} else {ExpectSignOrDigit};
         'reading: loop {
             let buf = try!(s.buf.fill_request(i + 1));
             if buf.len() <= i { break; }

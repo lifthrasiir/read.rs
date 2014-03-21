@@ -1,6 +1,5 @@
-use std::{cmp, str, vec};
+use std::{cmp, str, slice};
 use std::io::{IoError, IoResult};
-use std::vec_ng::Vec;
 
 pub struct LookaheadBuffer<'a> {
     priv buf: &'a mut Buffer,
@@ -184,7 +183,7 @@ impl<'a> Reader for LookaheadBuffer<'a> {
             len = cmp::min(buf.len(), filled.len());
             let input = filled.slice(0, len);
             let output = buf.mut_slice(0, len);
-            vec::bytes::copy_memory(output, input);
+            slice::bytes::copy_memory(output, input);
         }
         self.consume(len);
         Ok(len)
@@ -209,7 +208,7 @@ impl<'a> Buffer for LookaheadBuffer<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{cmp, vec};
+    use std::{cmp, slice};
     use std::io::{standard_error, IoResult, EndOfFile};
 
     // used to simulate the corner cases
@@ -233,7 +232,7 @@ mod tests {
                 len = cmp::min(buf.len(), filled.len());
                 let input = filled.slice(0, len);
                 let output = buf.mut_slice(0, len);
-                vec::bytes::copy_memory(output, input);
+                slice::bytes::copy_memory(output, input);
             }
             self.consume(len);
             Ok(len)

@@ -1,4 +1,3 @@
-use std::vec_ng::Vec;
 use collections::HashMap;
 
 use syntax::ast::{Name, TokenTree, Expr, Ty};
