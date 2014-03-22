@@ -118,7 +118,7 @@ fn parse_argument<'a>(s: &'a str) -> Result<(Argument<'a>, &'a str), ~str> {
             (Some('<'), _) => (None, AlignLeft, s1),
             (Some('^'), _) => (None, AlignCenter, s1),
             (Some('>'), _) => (None, AlignRight, s1),
-            (_, _) => (None, AlignUnknown, s),
+            (_, _) => (None, AlignUnknown, spec),
         };
 
         // parse one-character flags
@@ -165,7 +165,7 @@ fn parse_argument<'a>(s: &'a str) -> Result<(Argument<'a>, &'a str), ~str> {
     Ok((Argument { position: pos.unwrap_or(ArgumentNext), scan: scan }, remaining))
 }
 
-pub fn parse<'a>(mut s: &'a str) -> Result<Vec<Piece<'a>>, ~str> {
+pub fn parse_fmt<'a>(mut s: &'a str) -> Result<Vec<Piece<'a>>, ~str> {
     let mut pieces = Vec::new();
     let mut start = 0;
     loop {
@@ -215,21 +215,21 @@ mod tests {
 
     #[test]
     fn test_literal_and_whitespace() {
-        assert!(parse("") == Ok(vec!()));
-        assert!(parse("a") == Ok(vec!(String("a"))));
-        assert!(parse("asdf") == Ok(vec!(String("asdf"))));
-        assert!(parse("asdf\\foo") == Ok(vec!(String("asdf"), String("foo"))));
+        assert!(parse_fmt("") == Ok(vec!()));
+        assert!(parse_fmt("a") == Ok(vec!(String("a"))));
+        assert!(parse_fmt("asdf") == Ok(vec!(String("asdf"))));
+        assert!(parse_fmt("asdf\\foo") == Ok(vec!(String("asdf"), String("foo"))));
 
-        assert!(parse("a b c") == Ok(vec!(String("a"), Whitespace, String("b"),
-                                          Whitespace, String("c"))));
-        assert!(parse("a\t\tb\r\nc") == Ok(vec!(String("a"), Whitespace, String("b"),
-                                                Whitespace, String("c"))));
-        assert!(parse("a\\ b\\ c") == Ok(vec!(String("a"), String(" b"), String(" c"))));
-        assert!(parse(" x ") == Ok(vec!(Whitespace, String("x"), Whitespace)));
+        assert!(parse_fmt("a b c") == Ok(vec!(String("a"), Whitespace, String("b"),
+                                              Whitespace, String("c"))));
+        assert!(parse_fmt("a\t\tb\r\nc") == Ok(vec!(String("a"), Whitespace, String("b"),
+                                                    Whitespace, String("c"))));
+        assert!(parse_fmt("a\\ b\\ c") == Ok(vec!(String("a"), String(" b"), String(" c"))));
+        assert!(parse_fmt(" x ") == Ok(vec!(Whitespace, String("x"), Whitespace)));
 
-        assert!(parse("\\x") == Ok(vec!(String("x"))));
-        assert!(parse("\\{\\}") == Ok(vec!(String("{"), String("}"))));
-        assert!(parse("\\").is_err());
+        assert!(parse_fmt("\\x") == Ok(vec!(String("x"))));
+        assert!(parse_fmt("\\{\\}") == Ok(vec!(String("{"), String("}"))));
+        assert!(parse_fmt("\\").is_err());
     }
 
     #[test]
@@ -238,11 +238,106 @@ mod tests {
             position: ArgumentNext,
             scan: ScanSpec { fill: None, align: AlignUnknown, flags: 0, width: None, ty: "" }
         });
-        assert!(parse("{}") == Ok(vec!(placeholder)));
-        assert!(parse("a{}b") == Ok(vec!(String("a"), placeholder, String("b"))));
-        assert!(parse(" {} ") == Ok(vec!(Whitespace, placeholder, Whitespace)));
-        assert!(parse("\\\\{}\\\\") == Ok(vec!(String("\\"), placeholder, String("\\"))));
-        assert!(parse("\\{}").is_err());
+        assert!(parse_fmt("{}") == Ok(vec!(placeholder)));
+        assert!(parse_fmt("a{}b") == Ok(vec!(String("a"), placeholder, String("b"))));
+        assert!(parse_fmt(" {} ") == Ok(vec!(Whitespace, placeholder, Whitespace)));
+        assert!(parse_fmt("\\\\{}\\\\") == Ok(vec!(String("\\"), placeholder, String("\\"))));
+        assert!(parse_fmt("\\{}").is_err());
+    }
+
+    #[test]
+    fn test_spec_position() {
+        let arg_with_pos = |pos| Argument(Argument {
+            position: pos,
+            scan: ScanSpec { fill: None, align: AlignUnknown, flags: 0, width: None, ty: "" }
+        });
+        assert!(parse_fmt("{}") == Ok(vec!(arg_with_pos(ArgumentNext))));
+        assert!(parse_fmt("{a}") == Ok(vec!(arg_with_pos(ArgumentNamed("a")))));
+        assert!(parse_fmt("{名前}") == Ok(vec!(arg_with_pos(ArgumentNamed("名前")))));
+        assert!(parse_fmt("{  名前  }") == Ok(vec!(arg_with_pos(ArgumentNamed("名前")))));
+        assert!(parse_fmt("{0}") == Ok(vec!(arg_with_pos(ArgumentIs(0)))));
+        assert!(parse_fmt("{013}") == Ok(vec!(arg_with_pos(ArgumentIs(13)))));
+        assert!(parse_fmt("{{}}").is_err());
+        assert!(parse_fmt("{/}").is_err());
+        assert!(parse_fmt("{-7}").is_err());
+    }
+
+    #[test]
+    fn test_spec_with_simple_type() {
+        let arg_with_ty = |ty| Argument(Argument {
+            position: ArgumentNext,
+            scan: ScanSpec { fill: None, align: AlignUnknown, flags: 0, width: None, ty: ty }
+        });
+        assert!(parse_fmt("{}") == Ok(vec!(arg_with_ty(""))));
+        assert!(parse_fmt("{:}") == Ok(vec!(arg_with_ty(""))));
+        assert!(parse_fmt("{:a}") == Ok(vec!(arg_with_ty("a"))));
+        assert!(parse_fmt("{ : b }") == Ok(vec!(arg_with_ty("b"))));
+        assert!(parse_fmt("{:いろいろ}") == Ok(vec!(arg_with_ty("いろいろ"))));
+    }
+
+    #[test]
+    fn test_spec_with_flags() {
+        let arg_with_flags = |flags| Argument(Argument {
+            position: ArgumentNext,
+            scan: ScanSpec { fill: None, align: AlignUnknown, flags: flags, width: None, ty: "foo" }
+        });
+        let plus_mask = 1 << FlagSignPlus as uint;
+        let minus_mask = 1 << FlagSignMinus as uint;
+        let alternate_mask = 1 << FlagAlternate as uint;
+        assert!(parse_fmt("{:foo}") == Ok(vec!(arg_with_flags(0))));
+        assert!(parse_fmt("{:+foo}") == Ok(vec!(arg_with_flags(plus_mask))));
+        assert!(parse_fmt("{:-foo}") == Ok(vec!(arg_with_flags(minus_mask))));
+        assert!(parse_fmt("{:#foo}") == Ok(vec!(arg_with_flags(alternate_mask))));
+        assert!(parse_fmt("{:+#foo}") == Ok(vec!(arg_with_flags(plus_mask | alternate_mask))));
+        assert!(parse_fmt("{:-#foo}") == Ok(vec!(arg_with_flags(minus_mask | alternate_mask))));
+        assert!(parse_fmt("{:#+foo}").is_err());
+        assert!(parse_fmt("{:#-foo}").is_err());
+        assert!(parse_fmt("{:+-foo}").is_err());
+        assert!(parse_fmt("{:-+foo}").is_err());
+        assert!(parse_fmt("{:++foo}").is_err());
+        assert!(parse_fmt("{:--foo}").is_err());
+        assert!(parse_fmt("{:##foo}").is_err());
+    }
+
+    #[test]
+    fn test_spec_with_alignment_and_fill() {
+        let arg_with_pad = |align, fill| Argument(Argument {
+            position: ArgumentNext,
+            scan: ScanSpec { fill: fill, align: align, flags: 0, width: None, ty: "foo" }
+        });
+        assert!(parse_fmt("{:foo}") == Ok(vec!(arg_with_pad(AlignUnknown, None))));
+        assert!(parse_fmt("{:>foo}") == Ok(vec!(arg_with_pad(AlignRight, None))));
+        assert!(parse_fmt("{: > foo}") == Ok(vec!(arg_with_pad(AlignRight, None))));
+        assert!(parse_fmt("{:_>foo}") == Ok(vec!(arg_with_pad(AlignRight, Some('_')))));
+        assert!(parse_fmt("{:9>foo}") == Ok(vec!(arg_with_pad(AlignRight, Some('9')))));
+        assert!(parse_fmt("{:>>foo}") == Ok(vec!(arg_with_pad(AlignRight, Some('>')))));
+        assert!(parse_fmt("{:>>>foo}").is_err());
+        assert!(parse_fmt("{:^foo}") == Ok(vec!(arg_with_pad(AlignCenter, None))));
+        assert!(parse_fmt("{: ^ foo}") == Ok(vec!(arg_with_pad(AlignCenter, None))));
+        assert!(parse_fmt("{:_^foo}") == Ok(vec!(arg_with_pad(AlignCenter, Some('_')))));
+        assert!(parse_fmt("{:9^foo}") == Ok(vec!(arg_with_pad(AlignCenter, Some('9')))));
+        assert!(parse_fmt("{:^^foo}") == Ok(vec!(arg_with_pad(AlignCenter, Some('^')))));
+        assert!(parse_fmt("{:^^^foo}").is_err());
+        assert!(parse_fmt("{:<foo}") == Ok(vec!(arg_with_pad(AlignLeft, None))));
+        assert!(parse_fmt("{: < foo}") == Ok(vec!(arg_with_pad(AlignLeft, None))));
+        assert!(parse_fmt("{:_<foo}") == Ok(vec!(arg_with_pad(AlignLeft, Some('_')))));
+        assert!(parse_fmt("{:9<foo}") == Ok(vec!(arg_with_pad(AlignLeft, Some('9')))));
+        assert!(parse_fmt("{:<<foo}") == Ok(vec!(arg_with_pad(AlignLeft, Some('<')))));
+        assert!(parse_fmt("{:<<<foo}").is_err());
+    }
+
+    #[test]
+    fn test_spec_with_width() {
+        let arg_with_width = |width| Argument(Argument {
+            position: ArgumentNext,
+            scan: ScanSpec { fill: None, align: AlignUnknown, flags: 0, width: width, ty: "foo" }
+        });
+        assert!(parse_fmt("{:foo}") == Ok(vec!(arg_with_width(None))));
+        assert!(parse_fmt("{:0foo}") == Ok(vec!(arg_with_width(Some(0)))));
+        assert!(parse_fmt("{:042foo}") == Ok(vec!(arg_with_width(Some(42)))));
+        assert!(parse_fmt("{: 42 foo}") == Ok(vec!(arg_with_width(Some(42)))));
+        assert!(parse_fmt("{:99999999999999999999999foo}").is_err());
+        assert!(parse_fmt("{: 4 2 foo}").is_err());
     }
 }
 
