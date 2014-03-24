@@ -6,6 +6,8 @@ use syntax::ext::base::*;
 use syntax::parse;
 use syntax::parse::token;
 
+use parse::parse_fmt;
+
 struct Args {
     extra: @Expr,
     fmtstr: @Expr,
@@ -87,8 +89,8 @@ fn parse_args(cx: &mut ExtCtxt, sp: Span, tts: &[TokenTree]) -> Option<Args> {
                     return None;
                 }
                 _ => {
-                    cx.span_err(p.span, format!("expected ident for named argument, but found `{}`",
-                                                p.this_token_to_str()));
+                    cx.span_err(p.span, format!("expected ident for named argument, \
+                                                 but found `{}`", p.this_token_to_str()));
                     return None;
                 }
             };
@@ -121,7 +123,21 @@ fn expand(cx: &mut ExtCtxt, sp: Span, tts: &[TokenTree]) -> MacResult {
         None => return MRExpr(MacResult::raw_dummy_expr(sp))
     };
 
-    println!("{:?}", args);
+    let fmt = match expr_to_str(cx, args.fmtstr,
+                                "format argument must be a string literal.") {
+        Some((fmt, _)) => fmt,
+        None => return MRExpr(MacResult::raw_dummy_expr(sp))
+    };
+
+    let pieces = match parse_fmt(fmt.get()) {
+        Ok(pieces) => pieces,
+        Err(err) => {
+            cx.span_err(args.fmtstr.span, err);
+            return MRExpr(MacResult::raw_dummy_expr(sp));
+        }
+    };
+
+    println!("{:?}", pieces.as_slice());
 
     MRExpr(quote_expr!(cx, 1i))
 }

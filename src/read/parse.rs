@@ -246,6 +246,14 @@ mod tests {
     }
 
     #[test]
+    fn test_incomplete_spec() {
+        assert!(parse_fmt("{").is_err());
+        assert!(parse_fmt("}").is_err());
+        assert!(parse_fmt("{}}").is_err());
+        assert!(parse_fmt("{:}^}").is_err()); // XXX different from `format!`
+    }
+
+    #[test]
     fn test_spec_position() {
         let arg_with_pos = |pos| Argument(Argument {
             position: pos,
