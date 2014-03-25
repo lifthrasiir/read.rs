@@ -1,7 +1,7 @@
 use collections::HashMap;
 
-use syntax::ast::{Name, TokenTree, Expr, Ty};
-use syntax::codemap::Span;
+use syntax::ast::{Name, SpannedIdent, TokenTree, Expr, Ty};
+use syntax::codemap::{Span, Spanned};
 use syntax::ext::base::*;
 use syntax::parse;
 use syntax::parse::token;
@@ -12,14 +12,12 @@ struct Args {
     extra: @Expr,
     fmtstr: @Expr,
     ignore_case: bool,
-    unnamed: Vec<@Ty>,
-    named: HashMap<~str,@Ty>,
-    named_order: Vec<~str>,
+    named: HashMap<~str,(SpannedIdent,@Ty)>,
+    named_order: Vec<SpannedIdent>,
 }
 
 fn parse_args(cx: &mut ExtCtxt, sp: Span, tts: &[TokenTree]) -> Option<Args> {
-    let mut args = Vec::new();
-    let mut names = HashMap::<~str, @Ty>::new();
+    let mut names = HashMap::<~str,(SpannedIdent,@Ty)>::new();
     let mut order = Vec::new();
 
     let mut p = parse::new_parser_from_tts(
@@ -65,7 +63,6 @@ fn parse_args(cx: &mut ExtCtxt, sp: Span, tts: &[TokenTree]) -> Option<Args> {
     }
 
     // ... <types>
-    let mut named = false;
     // <types> ::= (empty)
     while p.token != token::EOF {
         // <types> ::= ','
@@ -76,45 +73,36 @@ fn parse_args(cx: &mut ExtCtxt, sp: Span, tts: &[TokenTree]) -> Option<Args> {
         if p.token == token::EOF { break } // accept trailing commas
 
         // <types> ::= ',' <ident> ':' 
-        if named || (token::is_ident(&p.token) && p.look_ahead(1, |t| *t == token::COLON)) {
-            named = true;
-            let ident = match p.token {
-                token::IDENT(i, _) => {
-                    p.bump();
-                    i
-                }
-                _ if named => {
-                    cx.span_err(p.span, "expected ident, positional arguments \
-                                         cannot follow named arguments");
-                    return None;
-                }
-                _ => {
-                    cx.span_err(p.span, format!("expected ident for named argument, \
-                                                 but found `{}`", p.this_token_to_str()));
-                    return None;
-                }
-            };
-            let interned_name = token::get_ident(ident);
-            let name = interned_name.get();
-            p.expect(&token::COLON);
-            let e = p.parse_ty(false);
-            match names.find_equiv(&name) {
-                None => {}
-                Some(prev) => {
-                    cx.span_err(e.span, format!("duplicate argument named `{}`", name));
-                    cx.parse_sess.span_diagnostic.span_note(prev.span, "previously here");
-                    continue;
-                }
+        let (ident, identsp) = match p.token {
+            token::IDENT(i, _) => {
+                p.bump();
+                (i, p.last_span)
             }
-            order.push(name.to_str());
-            names.insert(name.to_str(), e);
-        } else {
-            args.push(p.parse_ty(false));
+            _ => {
+                cx.span_err(p.span, format!("expected ident for argument, \
+                                             but found `{}`", p.this_token_to_str()));
+                return None;
+            }
+        };
+        let interned_name = token::get_ident(ident);
+        let name = interned_name.get();
+        p.expect(&token::COLON);
+        let ty = p.parse_ty(false);
+        match names.find_equiv(&name) {
+            None => {}
+            Some(&(previd, _)) => {
+                cx.span_err(identsp, format!("duplicate argument named `{}`", name));
+                cx.parse_sess.span_diagnostic.span_note(previd.span, "previously here");
+                continue;
+            }
         }
+        let spanned = Spanned { node: ident, span: identsp };
+        order.push(spanned);
+        names.insert(name.to_str(), (spanned, ty));
     }
 
     Some(Args { extra: extra, fmtstr: fmtstr, ignore_case: ignore_case,
-                unnamed: args, named: names, named_order: order })
+                named: names, named_order: order })
 }
 
 fn expand(cx: &mut ExtCtxt, sp: Span, tts: &[TokenTree]) -> MacResult {
@@ -136,6 +124,11 @@ fn expand(cx: &mut ExtCtxt, sp: Span, tts: &[TokenTree]) -> MacResult {
             return MRExpr(MacResult::raw_dummy_expr(sp));
         }
     };
+
+    /*
+    // start with the final result.
+    quote_expr!(cx, ::std::result::Ok(
+    */
 
     println!("{:?}", pieces.as_slice());
 
